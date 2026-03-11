@@ -5,10 +5,10 @@ Slurm 作业生命周期事件通过 Telegram Bot 推送通知。采用事件驱
 ## 架构
 
 ```
-┌─────────────────┐ curl POST ┌───────────────────┐  HTTPS ┌──────────┐
+┌─────────────────┐ curl POST  ┌───────────────────┐  HTTPS  ┌──────────┐
 │ PrologSlurmctld │──────────▶│ slurm_monitor.py  │───────▶│ Telegram │
-│ EpilogSlurmctld │           │   (HTTP daemon)   │        │ Bot API  │
-└─────────────────┘           └───────────────────┘        └──────────┘
+│ EpilogSlurmctld │            │   (HTTP daemon)   │         │ Bot API  │
+└─────────────────┘            └───────────────────┘         └──────────┘
 ```
 
 - **PrologSlurmctld** (`on_submit.sh`)：作业开始调度时触发，发送「已提交」通知
