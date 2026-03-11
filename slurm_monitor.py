@@ -1,52 +1,44 @@
 #!/usr/bin/env python3
 """
-slurm_monitor.py — Long-running daemon that polls the Slurm REST API and sends
-Telegram notifications via notify.py when jobs are submitted or finished.
+slurm_monitor.py — HTTP daemon that receives Slurm lifecycle events
+and sends Telegram notifications via notify.py.
+
+Architecture:
+    Slurm hooks (PrologSlurmctld / EpilogSlurmctld)
+        ──curl──▶  this daemon  ──▶  Telegram
 
 Usage:
-    python slurm_monitor.py
+    python slurm_monitor.py [--host 127.0.0.1] [--port 8080]
 
-Requirements:
-    pip install requests
+Endpoints:
+    POST /notify/submit   — new job submitted / starting
+    POST /notify/finish   — job reached terminal state
 
-Slurm REST API docs: https://slurm.schedmd.com/rest.html
-JWT token:           scontrol token username=<user> lifespan=86400
+Request body: JSON with job fields.
+    Minimal:  {"job_id": "12345"}
+    Full:     raw `scontrol show job <id> --json` .jobs[0] object
 """
 
+import argparse
+import json
 import logging
 import signal
-import time
-
-import requests
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import notify  # sibling module: notify.py
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# Slurm REST daemon base URL (typically port 6820)
-SLURM_API_URL = "http://slurm-head-node:6820"
+LISTEN_HOST = "127.0.0.1"
+LISTEN_PORT = 8080
 
-# API version — match your slurmrestd; check with: slurmrestd --version
-SLURM_API_VERSION = "v0.0.40"
+# Optional Bearer token — if non-empty, every request must carry a matching
+# "Authorization: Bearer <token>" header.  Set "" to disable.
+AUTH_TOKEN = ""
 
-# JWT token: run `scontrol token username=<user> lifespan=86400` on the head node
-SLURM_JWT_TOKEN = "your_jwt_token_here"
-
-# Optional proxy for Slurm REST calls (usually not needed); set {} to disable
-SLURM_API_PROXIES: dict = {}
-
-# How often to poll (seconds)
-POLL_INTERVAL = 30
-
-# Only monitor jobs belonging to these users; empty set = monitor ALL users
+# Only process notifications for these users; empty set = accept all.
 WATCH_USERS: set[str] = set()
-
-# ── Terminal states ───────────────────────────────────────────────────────────
-
-TERMINAL_STATES = frozenset({
-    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
-    "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE", "OUT_OF_MEMORY",
-})
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -58,31 +50,22 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Field normalisation helpers ───────────────────────────────────────────────
+# scontrol --json output uses nested dicts for numbers/states in newer Slurm
+# versions.  These helpers flatten them into plain types that notify.py expects.
 
 def _num(field) -> int:
-    """
-    Slurm REST API v0.0.39+ wraps numeric fields as:
-        {"number": 123, "set": true, "infinite": false}
-    Older versions return plain integers. Handle both.
-    """
     if isinstance(field, dict):
         return int(field.get("number", 0) or 0)
     return int(field or 0)
 
 
 def _state(field) -> str:
-    """job_state may be a string or a list of strings."""
     if isinstance(field, list):
         return (field[0] if field else "UNKNOWN").upper()
     return str(field or "UNKNOWN").upper()
 
 
 def _exit_code(field) -> str:
-    """
-    Exit code may be:
-      - plain int
-      - {"return_code": {"number": 0, ...}, "signal": {...}}
-    """
     if isinstance(field, dict):
         rc = field.get("return_code", field)
         if isinstance(rc, dict):
@@ -92,7 +75,11 @@ def _exit_code(field) -> str:
 
 
 def _normalise(raw: dict) -> dict:
-    """Return a flat, stable dict with the fields notify.py expects."""
+    """Flatten raw scontrol / hook JSON into the dict notify.py expects."""
+    # If the caller sent the full scontrol wrapper, unwrap it.
+    if "jobs" in raw and isinstance(raw["jobs"], list) and raw["jobs"]:
+        raw = raw["jobs"][0]
+
     return {
         "job_id":          str(raw.get("job_id", "N/A")),
         "name":            raw.get("name", "N/A"),
@@ -107,153 +94,109 @@ def _normalise(raw: dict) -> dict:
         "standard_error":  raw.get("standard_error",  "") or "",
     }
 
-# ── Monitor class ─────────────────────────────────────────────────────────────
+# ── HTTP server ───────────────────────────────────────────────────────────────
 
-class SlurmMonitor:
-    """
-    State machine that tracks job lifecycle changes.
+class ThreadedHTTPServer(HTTPServer):
+    """Handle each request in a new daemon thread."""
+    def process_request(self, request, client_address):
+        t = threading.Thread(target=self.process_request_thread,
+                             args=(request, client_address), daemon=True)
+        t.start()
 
-    _known_jobs     : job_id → current state string  (for all active jobs)
-    _notified_done  : set of job_ids we have already sent a finish notification for
-                      (guards against sending duplicates while a terminal job
-                       lingers in the API before being purged)
-    """
-
-    def __init__(self) -> None:
-        self._running        = True
-        self._known_jobs:    dict[str, str] = {}
-        self._notified_done: set[str]       = set()
-
-        self._session = requests.Session()
-        self._session.headers.update({
-            "X-SLURM-USER-TOKEN": SLURM_JWT_TOKEN,
-            "Content-Type":       "application/json",
-        })
-        self._session.proxies = SLURM_API_PROXIES
-
-    # ── REST API ───────────────────────────────────────────────────────────────
-
-    def _fetch_jobs(self) -> list[dict] | None:
-        url = f"{SLURM_API_URL}/slurm/{SLURM_API_VERSION}/jobs"
+    def process_request_thread(self, request, client_address):
         try:
-            resp = self._session.get(url, timeout=15)
-            resp.raise_for_status()
-            return resp.json().get("jobs", [])
-        except Exception as exc:
-            log.error("Failed to fetch jobs from Slurm REST API: %s", exc)
-            return None   # None signals a transient error; skip this cycle
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
 
-    # ── Bootstrap ─────────────────────────────────────────────────────────────
 
-    def _bootstrap(self) -> None:
-        """
-        Snapshot all currently known jobs on startup.
-        No notifications are sent — we don't know the history of these jobs.
-        """
-        log.info("Bootstrapping: loading existing Slurm jobs…")
-        raw_jobs = self._fetch_jobs()
-        if raw_jobs is None:
-            log.warning("Bootstrap failed; will retry on first poll.")
+class NotifyHandler(BaseHTTPRequestHandler):
+    """Thin HTTP handler: authenticate → parse JSON → normalise → notify."""
+
+    def do_POST(self):
+        # ── Auth ───────────────────────────────────────────────────────────
+        if AUTH_TOKEN:
+            hdr = self.headers.get("Authorization", "")
+            token = hdr.removeprefix("Bearer ").strip() if hdr else ""
+            if token != AUTH_TOKEN:
+                self._respond(403, {"error": "forbidden"})
+                return
+
+        # ── Read body ──────────────────────────────────────────────────────
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            self._respond(400, {"error": "empty body"})
+            return
+        try:
+            raw = json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._respond(400, {"error": f"invalid JSON: {exc}"})
             return
 
-        for raw in raw_jobs:
-            job    = _normalise(raw)
-            job_id = job["job_id"]
-            state  = job["job_state"]
+        job = _normalise(raw)
 
-            if WATCH_USERS and job["user_name"] not in WATCH_USERS:
-                continue
+        # ── User filter ───────────────────────────────────────────────────
+        if WATCH_USERS and job["user_name"] not in WATCH_USERS:
+            self._respond(200, {"status": "skipped", "reason": "user not in WATCH_USERS"})
+            return
 
-            self._known_jobs[job_id] = state
-            if state in TERMINAL_STATES:
-                self._notified_done.add(job_id)  # already done, skip later
+        # ── Route ──────────────────────────────────────────────────────────
+        if self.path == "/notify/submit":
+            log.info("Job submitted: id=%s name=%s user=%s",
+                     job["job_id"], job["name"], job["user_name"])
+            self._safe_call(notify.notify_submitted, job)
 
-        log.info(
-            "Bootstrap complete — %d jobs loaded (%d already terminal).",
-            len(self._known_jobs), len(self._notified_done),
-        )
+        elif self.path == "/notify/finish":
+            log.info("Job finished: id=%s name=%s state=%s exit=%s",
+                     job["job_id"], job["name"], job["job_state"], job["exit_code"])
+            self._safe_call(notify.notify_finished, job)
 
-    # ── Per-poll processing ────────────────────────────────────────────────────
+        else:
+            self._respond(404, {"error": "not found"})
 
-    def _process(self, raw_jobs: list[dict]) -> None:
-        current_ids: set[str] = set()
+    # ── Helpers ────────────────────────────────────────────────────────────
 
-        for raw in raw_jobs:
-            job    = _normalise(raw)
-            job_id = job["job_id"]
-            state  = job["job_state"]
-
-            if WATCH_USERS and job["user_name"] not in WATCH_USERS:
-                continue
-
-            current_ids.add(job_id)
-
-            # ── Brand-new job ──────────────────────────────────────────────────
-            if job_id not in self._known_jobs and job_id not in self._notified_done:
-                log.info(
-                    "New job: id=%s name=%s user=%s state=%s",
-                    job_id, job["name"], job["user_name"], state,
-                )
-                self._known_jobs[job_id] = state
-                self._safe_notify(notify.notify_submitted, job, "notify_submitted")
-
-                # Edge-case: job already terminal by the time we first see it
-                if state in TERMINAL_STATES:
-                    log.info("Job %s already terminal on first sight.", job_id)
-                    self._safe_notify(notify.notify_finished, job, "notify_finished")
-                    self._notified_done.add(job_id)
-
-            # ── Known job: watch for terminal transition ───────────────────────
-            else:
-                prev = self._known_jobs.get(job_id, state)
-                if prev != state:
-                    log.info("Job %s state change: %s → %s", job_id, prev, state)
-                self._known_jobs[job_id] = state
-
-                if state in TERMINAL_STATES and job_id not in self._notified_done:
-                    log.info(
-                        "Job finished: id=%s name=%s state=%s exit_code=%s",
-                        job_id, job["name"], state, job["exit_code"],
-                    )
-                    self._safe_notify(notify.notify_finished, job, "notify_finished")
-                    self._notified_done.add(job_id)
-
-        # ── Evict jobs that have left the API (purged by Slurm) ────────────────
-        gone = set(self._known_jobs.keys()) - current_ids
-        for job_id in gone:
-            log.debug("Job %s no longer in API response, evicting.", job_id)
-            del self._known_jobs[job_id]
-        self._notified_done -= gone   # safe to forget; job cannot reappear
-
-    def _safe_notify(self, fn, job: dict, label: str) -> None:
+    def _safe_call(self, fn, job: dict) -> None:
         try:
             fn(job)
+            self._respond(200, {"status": "ok"})
         except Exception as exc:
-            log.error("%s raised an exception: %s", label, exc)
+            log.error("%s failed: %s", fn.__name__, exc)
+            self._respond(500, {"error": str(exc)})
 
-    # ── Main loop ──────────────────────────────────────────────────────────────
+    def _respond(self, code: int, body: dict) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
 
-    def run(self) -> None:
-        signal.signal(signal.SIGINT,  self._handle_stop)
-        signal.signal(signal.SIGTERM, self._handle_stop)
-
-        self._bootstrap()
-        log.info("Polling every %d seconds. Press Ctrl-C to stop.", POLL_INTERVAL)
-
-        while self._running:
-            raw_jobs = self._fetch_jobs()
-            if raw_jobs is not None:
-                self._process(raw_jobs)
-            time.sleep(POLL_INTERVAL)
-
-        log.info("Monitor stopped cleanly.")
-
-    def _handle_stop(self, *_) -> None:
-        log.info("Shutdown signal received — finishing current cycle…")
-        self._running = False
+    def log_message(self, fmt, *args):
+        log.debug(fmt, *args)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Slurm Telegram notification daemon")
+    parser.add_argument("--host", default=LISTEN_HOST, help="bind address")
+    parser.add_argument("--port", type=int, default=LISTEN_PORT, help="listen port")
+    args = parser.parse_args()
+
+    server = ThreadedHTTPServer((args.host, args.port), NotifyHandler)
+
+    def _shutdown(*_):
+        log.info("Shutdown signal received.")
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    log.info("Listening on %s:%d — press Ctrl-C to stop.", args.host, args.port)
+    server.serve_forever()
+    log.info("Daemon stopped.")
+
+
 if __name__ == "__main__":
-    SlurmMonitor().run()
+    main()
