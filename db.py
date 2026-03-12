@@ -82,7 +82,7 @@ def get_recent_messages() -> list[dict]:
 
 
 def get_start_time(job_id: str) -> float | None:
-    """Return the created_at timestamp of the most recent 'start' event for a job."""
+    "Return the created_at timestamp of the most recent 'start' event for a job."
     conn = _get_conn()
     row = conn.execute(
         "SELECT created_at FROM messages WHERE job_id = ? AND event_type = 'start' "

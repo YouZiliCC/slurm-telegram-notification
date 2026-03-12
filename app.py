@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import logging
 import subprocess
 from dotenv import load_dotenv
@@ -36,12 +37,18 @@ logging.info("Message database initialised (max %d visible in Telegram)", db.MAX
 def _cleanup_overflow() -> None:
     "Delete Telegram messages that exceed the MAX_MESSAGES window."
     for rec in db.get_overflow_records():
+        all_deleted = True
         for mid in rec["telegram_msg_ids"]:
             try:
-                notify.delete_message(mid)
+                ok = notify.delete_message(mid)
+                if not ok:
+                    log.warning("Failed to delete Telegram message %s", mid)
+                    all_deleted = False
             except Exception as exc:
                 log.warning("Failed to delete Telegram message %s: %s", mid, exc)
-        db.clear_telegram_ids(rec["id"])
+                all_deleted = False
+        if all_deleted:
+            db.clear_telegram_ids(rec["id"])
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -67,7 +74,12 @@ def _query_scontrol(job_id: str) -> dict | None:
             jobs = data.get("jobs", [])
             if jobs:
                 return jobs[0]
-    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        else:
+            log.debug("scontrol returned %d for job %s: %s",
+                      result.returncode, job_id, result.stderr.strip())
+    except FileNotFoundError:
+        log.debug("scontrol not found in PATH")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         log.debug("scontrol query failed for job %s: %s", job_id, exc)
     return None
 
@@ -183,6 +195,9 @@ def handle_start():
     log.info("Job started: id=%s name=%s user=%s",
              job["job_id"], job["name"], job["user_name"])
     job = _enrich_from_slurm(job)
+    # Fallback: start events should be RUNNING
+    if job["job_state"] == "UNKNOWN":
+        job["job_state"] = "RUNNING"
     try:
         msg_ids = notify.notify_started(job)
         summary = f"Job {job['job_id']} ({job['name']}) started — user={job['user_name']}"
@@ -211,6 +226,15 @@ def handle_finish():
     log.info("Job finished: id=%s name=%s state=%s exit=%s",
              job["job_id"], job["name"], job["job_state"], job["exit_code"])
     job = _enrich_from_slurm(job)
+    # Fallbacks when scontrol didn't provide data
+    if job["job_state"] == "UNKNOWN":
+        job["job_state"] = "COMPLETED" if job["exit_code"] == "0" else "FAILED"
+    if not job["end_time"]:
+        job["end_time"] = int(time.time())
+    if not job["start_time"]:
+        db_start = db.get_start_time(job["job_id"])
+        if db_start:
+            job["start_time"] = int(db_start)
     try:
         msg_ids = notify.notify_finished(job)
         summary = f"Job {job['job_id']} ({job['name']}) finished — state={job['job_state']} exit={job['exit_code']}"
