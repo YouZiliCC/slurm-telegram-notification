@@ -62,8 +62,9 @@ def _post_with_retry(url: str, **kwargs) -> requests.Response | None:
     return None
 
 
-def _send_message(html: str) -> None:
-    _post_with_retry(
+def _send_message(html: str) -> int | None:
+    """Send an HTML message and return the Telegram message_id, or None."""
+    resp = _post_with_retry(
         f"{_base_url()}/sendMessage",
         data={
             "chat_id":           CHAT_ID,
@@ -72,9 +73,15 @@ def _send_message(html: str) -> None:
             "message_thread_id": MESSAGE_THREAD_ID,
         },
     )
+    if resp is not None:
+        try:
+            return resp.json()["result"]["message_id"]
+        except (KeyError, ValueError):
+            pass
+    return None
 
 
-def _send_log_file(path: str, caption: str) -> None:
+def _send_log_file(path: str, caption: str) -> int | None:
     """Upload a log file; tail the last MAX_LOG_BYTES if the file is too large."""
     if not os.path.exists(path):
         return
@@ -89,7 +96,7 @@ def _send_log_file(path: str, caption: str) -> None:
         else:
             content = f.read()
 
-    _post_with_retry(
+    resp = _post_with_retry(
         f"{_base_url()}/sendDocument",
         data={
             "chat_id":           CHAT_ID,
@@ -98,12 +105,27 @@ def _send_log_file(path: str, caption: str) -> None:
         },
         files={"document": (filename, content)},
     )
+    if resp is not None:
+        try:
+            return resp.json()["result"]["message_id"]
+        except (KeyError, ValueError):
+            pass
+    return None
+
+
+def delete_message(message_id: int) -> bool:
+    """Delete a single message from the Telegram chat. Returns True on success."""
+    resp = _post_with_retry(
+        f"{_base_url()}/deleteMessage",
+        data={"chat_id": CHAT_ID, "message_id": message_id},
+    )
+    return resp is not None and resp.ok
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def notify_started(job: dict) -> None:
-    """Send a Telegram message when a Slurm job is starts."""
+def notify_started(job: dict) -> list[int]:
+    """Send a Telegram message when a Slurm job starts. Returns message_ids."""
     job_id    = job.get("job_id",    "N/A")
     job_name  = job.get("name",      "N/A")
     user      = job.get("user_name", "N/A")
@@ -119,11 +141,15 @@ def notify_started(job: dict) -> None:
         f"<b>Partition</b>: {_escape_html(partition)}\n"
         f"<b>State</b>:     {_escape_html(state)}"
     )
-    _send_message(html)
+    msg_ids: list[int] = []
+    mid = _send_message(html)
+    if mid:
+        msg_ids.append(mid)
+    return msg_ids
 
 
-def notify_finished(job: dict) -> None:
-    """Send a Telegram message (+ log files) when a Slurm job finishes."""
+def notify_finished(job: dict) -> list[int]:
+    """Send a Telegram message (+ log files) when a Slurm job finishes. Returns message_ids."""
     job_id    = job.get("job_id",    "N/A")
     job_name  = job.get("name",      "N/A")
     user      = job.get("user_name", "N/A")
@@ -152,9 +178,15 @@ def notify_finished(job: dict) -> None:
         f"<b>State</b>:     {_escape_html(state)}\n"
         f"<b>Exit Code</b>: {_escape_html(exit_code)}"
     )
-    _send_message(html)
+    msg_ids: list[int] = []
+    mid = _send_message(html)
+    if mid:
+        msg_ids.append(mid)
 
     # Upload stdout / stderr log files as attachments
     for log_path in filter(None, [stdout, stderr]):
         caption = f"Job {job_id} — {os.path.basename(log_path)}"
-        _send_log_file(log_path, caption)
+        fid = _send_log_file(log_path, caption)
+        if fid:
+            msg_ids.append(fid)
+    return msg_ids

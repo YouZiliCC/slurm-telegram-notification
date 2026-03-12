@@ -48,6 +48,21 @@ except ImportError as e:
     logging.error(f"Failed to import notify module: {e}")
     exit(1)
 
+import db
+db.init_db()
+logging.info("Message database initialised (max %d visible in Telegram)", db.MAX_MESSAGES)
+
+
+def _cleanup_overflow() -> None:
+    """Delete Telegram messages that exceed the MAX_MESSAGES window."""
+    for rec in db.get_overflow_records():
+        for mid in rec["telegram_msg_ids"]:
+            try:
+                notify.delete_message(mid)
+            except Exception as exc:
+                log.warning("Failed to delete Telegram message %s: %s", mid, exc)
+        db.clear_telegram_ids(rec["id"])
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip() 
@@ -134,7 +149,10 @@ def handle_start():
     log.info("Job started: id=%s name=%s user=%s",
              job["job_id"], job["name"], job["user_name"])
     try:
-        notify.notify_started(job)
+        msg_ids = notify.notify_started(job)
+        summary = f"Job {job['job_id']} ({job['name']}) started — user={job['user_name']}"
+        db.record_message("start", job["job_id"], summary, msg_ids)
+        _cleanup_overflow()
         return jsonify(status="ok"), 200
     except Exception as exc:
         log.error("notify_started failed: %s", exc)
@@ -158,11 +176,21 @@ def handle_finish():
     log.info("Job finished: id=%s name=%s state=%s exit=%s",
              job["job_id"], job["name"], job["job_state"], job["exit_code"])
     try:
-        notify.notify_finished(job)
+        msg_ids = notify.notify_finished(job)
+        summary = f"Job {job['job_id']} ({job['name']}) finished — state={job['job_state']} exit={job['exit_code']}"
+        db.record_message("finish", job["job_id"], summary, msg_ids)
+        _cleanup_overflow()
         return jsonify(status="ok"), 200
     except Exception as exc:
         log.error("notify_finished failed: %s", exc)
         return jsonify(error=str(exc)), 500
+
+
+@app.route("/messages", methods=["GET"])
+@require_auth
+def recent_messages():
+    """Return the most recent sent notifications (up to MAX_MESSAGES)."""
+    return jsonify(messages=db.get_recent_messages()), 200
 
 
 @app.route("/health", methods=["GET"])
