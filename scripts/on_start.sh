@@ -1,11 +1,5 @@
 #!/bin/bash
-# on_submit.sh — PrologSlurmctld hook: notify daemon when a job starts.
-#
-# Install:
-#   1. Copy to a path accessible by SlurmUser, e.g. /etc/slurm/scripts/on_submit.sh
-#   2. chmod +x /etc/slurm/scripts/on_submit.sh
-#   3. Add to slurm.conf:  PrologSlurmctld=/etc/slurm/scripts/on_submit.sh
-#   4. Reconfigure:        scontrol reconfigure
+# on_start.sh — PrologSlurmctld hook: notify daemon when a job starts.
 
 DAEMON_URL="${SLURM_TG_NOTIFY_URL:-http://127.0.0.1:8080}"
 # AUTH_TOKEN=""  # uncomment and set if the daemon requires authentication
@@ -32,7 +26,7 @@ if [ -z "$PAYLOAD" ]; then
 fi
 
 # ── POST to daemon ───────────────────────────────────────────────────────────
-CURL_ARGS=(-s -X POST "$DAEMON_URL/notify/submit"
+CURL_ARGS=(-s -X POST "$DAEMON_URL/notify/start"
            -H "Content-Type: application/json"
            -d "$PAYLOAD")
 

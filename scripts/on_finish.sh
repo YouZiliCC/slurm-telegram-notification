@@ -1,11 +1,5 @@
 #!/bin/bash
 # on_finish.sh — EpilogSlurmctld hook: notify daemon when a job finishes.
-#
-# Install:
-#   1. Copy to a path accessible by SlurmUser, e.g. /etc/slurm/scripts/on_finish.sh
-#   2. chmod +x /etc/slurm/scripts/on_finish.sh
-#   3. Add to slurm.conf:  EpilogSlurmctld=/etc/slurm/scripts/on_finish.sh
-#   4. Reconfigure:        scontrol reconfigure
 
 DAEMON_URL="${SLURM_TG_NOTIFY_URL:-http://127.0.0.1:8080}"
 # AUTH_TOKEN=""  # uncomment and set if the daemon requires authentication

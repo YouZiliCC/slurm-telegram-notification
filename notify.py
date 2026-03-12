@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 notify.py — Telegram notification functions for Slurm job events.
 
 Public API:
-    notify_submitted(job: dict)  → called when a new job is detected
+    notify_started(job: dict)    → called when a job starts running
     notify_finished(job: dict)   → called when a job reaches a terminal state
 
 Expected keys in `job` dict (all optional, fall back to "N/A"):
@@ -19,16 +18,17 @@ from datetime import timedelta
 
 # ── Telegram Configuration ────────────────────────────────────────────────────
 
-TELEGRAM_TOKEN    = "00000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-CHAT_ID           = "-000000000"
-MESSAGE_THREAD_ID = "0"
-PROXIES           = {"https": "http://proxy.server:8080"}  # set {} to disable
+TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN", "").strip()
+CHAT_ID           = os.getenv("CHAT_ID", "-000000000").strip()
+MESSAGE_THREAD_ID = os.getenv("MESSAGE_THREAD_ID", "0").strip()
+_PROXY_URL        = os.getenv("PROXIES", "").strip()
+PROXIES           = {"https": _PROXY_URL} if _PROXY_URL else {}
 
 # ── Behaviour ─────────────────────────────────────────────────────────────────
 
-MAX_LOG_BYTES = 10 * 1024 * 1024   # Tail-truncate logs larger than 10 MB
-RETRY_COUNT   = 3
-RETRY_DELAY   = 5                  # seconds between retries
+MAX_LOG_BYTES = int(os.getenv("MAX_LOG_BYTES", "1048576"))
+RETRY_COUNT   = int(os.getenv("RETRY_COUNT", "3"))
+RETRY_DELAY   = int(os.getenv("RETRY_DELAY", "5"))
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -102,8 +102,8 @@ def _send_log_file(path: str, caption: str) -> None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def notify_submitted(job: dict) -> None:
-    """Send a Telegram message when a Slurm job is submitted / starts."""
+def notify_started(job: dict) -> None:
+    """Send a Telegram message when a Slurm job is starts."""
     job_id    = job.get("job_id",    "N/A")
     job_name  = job.get("name",      "N/A")
     user      = job.get("user_name", "N/A")
@@ -111,7 +111,7 @@ def notify_submitted(job: dict) -> None:
     state     = job.get("job_state", "N/A")
 
     html = (
-        "📥 <b>Slurm Job Submitted</b>\n"
+        "📥 <b>Slurm Job Started</b>\n"
         "━━━━━━━━━━━━━━━\n"
         f"<b>ID</b>:        <code>{_escape_html(job_id)}</code>\n"
         f"<b>Name</b>:      {_escape_html(job_name)}\n"
