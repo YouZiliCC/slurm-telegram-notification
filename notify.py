@@ -122,11 +122,11 @@ def notify_started(job: dict) -> list[int]:
     html = (
         "📥 <b>Slurm Job Started</b>\n"
         "━━━━━━━━━━━━━━━\n"
-        f"<b>ID</b>:        <code>{_escape_html(job_id)}</code>\n"
-        f"<b>Name</b>:      {_escape_html(job_name)}\n"
-        f"<b>User</b>:      {_escape_html(user)}\n"
-        f"<b>Partition</b>: {_escape_html(partition)}\n"
-        f"<b>State</b>:     {_escape_html(state)}"
+        f"<b>ID:</b> <code>{_escape_html(job_id)}</code>\n"
+        f"<b>Name:</b> {_escape_html(job_name)}\n"
+        f"<b>User:</b> {_escape_html(user)}\n"
+        f"<b>Partition:</b> {_escape_html(partition)}\n"
+        f"<b>State:</b> {_escape_html(state)}"
     )
     msg_ids: list[int] = []
     mid = _send_message(html)
@@ -156,14 +156,14 @@ def notify_finished(job: dict) -> list[int]:
     html = (
         f"{icon} <b>Slurm Job Finished</b>\n"
         "━━━━━━━━━━━━━━━\n"
-        f"<b>ID</b>:        <code>{_escape_html(job_id)}</code>\n"
-        f"<b>Name</b>:      {_escape_html(job_name)}\n"
-        f"<b>User</b>:      {_escape_html(user)}\n"
-        f"<b>Partition</b>: {_escape_html(partition)}\n"
-        f"<b>Nodes</b>:     {_escape_html(nodes)}\n"
-        f"<b>Runtime</b>:   {_escape_html(runtime)}\n"
-        f"<b>State</b>:     {_escape_html(state)}\n"
-        f"<b>Exit Code</b>: {_escape_html(exit_code)}"
+        f"<b>ID:</b> <code>{_escape_html(job_id)}</code>\n"
+        f"<b>Name:</b> {_escape_html(job_name)}\n"
+        f"<b>User:</b> {_escape_html(user)}\n"
+        f"<b>Partition:</b> {_escape_html(partition)}\n"
+        f"<b>Nodes:</b> {_escape_html(nodes)}\n"
+        f"<b>Runtime:</b> {_escape_html(runtime)}\n"
+        f"<b>State:</b> {_escape_html(state)}\n"
+        f"<b>Exit Code:</b> {_escape_html(exit_code)}"
     )
     msg_ids: list[int] = []
     mid = _send_message(html)

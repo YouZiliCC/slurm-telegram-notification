@@ -1,6 +1,7 @@
 import os
-import time
+import json
 import logging
+import subprocess
 from dotenv import load_dotenv
 from functools import wraps
 from flask import Flask, request, jsonify
@@ -50,6 +51,60 @@ WATCH_USERS: set[str] = set([user.strip() for user in os.getenv("WATCH_USERS", "
 # ── Flask application ─────────────────────────────────────────────────────────
 
 app = Flask(__name__)
+
+
+# ── Slurm query helper ────────────────────────────────────────────────────────
+
+def _query_scontrol(job_id: str) -> dict | None:
+    """Call `scontrol show job <id> --json` and return the job dict, or None."""
+    try:
+        result = subprocess.run(
+            ["scontrol", "show", "job", job_id, "--json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            jobs = data.get("jobs", [])
+            if jobs:
+                return jobs[0]
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        log.debug("scontrol query failed for job %s: %s", job_id, exc)
+    return None
+
+
+def _enrich_from_slurm(job: dict) -> dict:
+    """Fill in missing/default fields by querying Slurm directly."""
+    missing_fields = (
+        job["name"] == "N/A"
+        or job["job_state"] == "UNKNOWN"
+        or not job["start_time"]
+        or not job["end_time"]
+    )
+    if not missing_fields:
+        return job
+
+    slurm = _query_scontrol(job["job_id"])
+    if not slurm:
+        return job
+
+    if job["name"] == "N/A":
+        job["name"] = slurm.get("name", job["name"])
+    if job["job_state"] == "UNKNOWN":
+        job["job_state"] = _state(slurm.get("job_state"))
+    if not job["start_time"]:
+        job["start_time"] = _num(slurm.get("start_time"))
+    if not job["end_time"]:
+        job["end_time"] = _num(slurm.get("end_time"))
+    if job["exit_code"] == "N/A":
+        job["exit_code"] = _exit_code(slurm.get("exit_code"))
+    if job["nodes"] == "N/A":
+        job["nodes"] = slurm.get("nodes", job["nodes"])
+    if not job.get("standard_output"):
+        job["standard_output"] = slurm.get("standard_output", "") or ""
+    if not job.get("standard_error"):
+        job["standard_error"] = slurm.get("standard_error", "") or ""
+
+    return job
 
 # ── Field normalisation helpers ───────────────────────────────────────────────
 def _num(field) -> int:
@@ -127,9 +182,7 @@ def handle_start():
 
     log.info("Job started: id=%s name=%s user=%s",
              job["job_id"], job["name"], job["user_name"])
-    # For start events, state should be RUNNING
-    if job["job_state"] == "UNKNOWN":
-        job["job_state"] = "RUNNING"
+    job = _enrich_from_slurm(job)
     try:
         msg_ids = notify.notify_started(job)
         summary = f"Job {job['job_id']} ({job['name']}) started — user={job['user_name']}"
@@ -157,16 +210,7 @@ def handle_finish():
 
     log.info("Job finished: id=%s name=%s state=%s exit=%s",
              job["job_id"], job["name"], job["job_state"], job["exit_code"])
-    # Infer state from exit code when not provided
-    if job["job_state"] == "UNKNOWN":
-        job["job_state"] = "COMPLETED" if job["exit_code"] == "0" else "FAILED"
-    # Fill in missing timestamps from the database
-    if not job["end_time"]:
-        job["end_time"] = int(time.time())
-    if not job["start_time"]:
-        db_start = db.get_start_time(job["job_id"])
-        if db_start:
-            job["start_time"] = int(db_start)
+    job = _enrich_from_slurm(job)
     try:
         msg_ids = notify.notify_finished(job)
         summary = f"Job {job['job_id']} ({job['name']}) finished — state={job['job_state']} exit={job['exit_code']}"
