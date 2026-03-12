@@ -1,16 +1,3 @@
-"""
-notify.py — Telegram notification functions for Slurm job events.
-
-Public API:
-    notify_started(job: dict)    → called when a job starts running
-    notify_finished(job: dict)   → called when a job reaches a terminal state
-
-Expected keys in `job` dict (all optional, fall back to "N/A"):
-    job_id, name, user_name, partition, nodes,
-    job_state, exit_code, start_time (epoch int), end_time (epoch int),
-    standard_output (path), standard_error (path)
-"""
-
 import os
 import time
 import requests

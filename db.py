@@ -1,11 +1,3 @@
-"""
-db.py — SQLite store for all sent notifications.
-
-All records are kept permanently. The telegram_msg_ids column stores
-the Telegram message IDs (JSON array) so that overflow messages beyond
-MAX_MESSAGES can be deleted from the chat while staying in the DB.
-"""
-
 import json
 import os
 import sqlite3
@@ -19,7 +11,7 @@ _local = threading.local()
 
 
 def _get_conn() -> sqlite3.Connection:
-    """Return a thread-local SQLite connection."""
+    "Return a thread-local SQLite connection."
     conn = getattr(_local, "conn", None)
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
@@ -29,7 +21,7 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create the messages table if it does not exist."""
+    "Create the messages table if it does not exist."
     conn = _get_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
@@ -46,7 +38,7 @@ def init_db() -> None:
 
 def record_message(event_type: str, job_id: str, summary: str,
                    telegram_msg_ids: list[int] | None = None) -> None:
-    """Insert a message record. No rows are ever deleted."""
+    "Insert a message record."
     conn = _get_conn()
     ids_json = json.dumps(telegram_msg_ids) if telegram_msg_ids else None
     conn.execute(
@@ -58,11 +50,7 @@ def record_message(event_type: str, job_id: str, summary: str,
 
 
 def get_overflow_records() -> list[dict]:
-    """Return records whose Telegram messages should be deleted.
-
-    These are records that are NOT among the latest MAX_MESSAGES *and*
-    still have a non-null telegram_msg_ids (i.e. not yet cleaned up).
-    """
+    "Return records whose Telegram messages should be deleted."
     conn = _get_conn()
     rows = conn.execute("""
         SELECT id, telegram_msg_ids FROM messages
@@ -76,14 +64,14 @@ def get_overflow_records() -> list[dict]:
 
 
 def clear_telegram_ids(record_id: int) -> None:
-    """Mark a record's Telegram messages as deleted (set to NULL)."""
+    "Mark a record's Telegram messages as deleted (set to NULL)."
     conn = _get_conn()
     conn.execute("UPDATE messages SET telegram_msg_ids = NULL WHERE id = ?", (record_id,))
     conn.commit()
 
 
 def get_recent_messages() -> list[dict]:
-    """Return the most recent messages, newest first."""
+    "Return the most recent messages, newest first."
     conn = _get_conn()
     rows = conn.execute(
         "SELECT id, event_type, job_id, summary, telegram_msg_ids, created_at "
@@ -91,3 +79,14 @@ def get_recent_messages() -> list[dict]:
         (MAX_MESSAGES,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_start_time(job_id: str) -> float | None:
+    """Return the created_at timestamp of the most recent 'start' event for a job."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT created_at FROM messages WHERE job_id = ? AND event_type = 'start' "
+        "ORDER BY id DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    return row["created_at"] if row else None

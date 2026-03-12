@@ -1,27 +1,5 @@
-"""
-app.py — Flask-based HTTP daemon that receives Slurm lifecycle events
-and sends Telegram notifications via notify.py.
-
-Architecture:
-    Slurm hooks (PrologSlurmctld / EpilogSlurmctld)
-        ──curl──▶  Flask daemon  ──▶  Telegram
-
-Endpoints:
-    POST /notify/submit   — new job submitted / starting
-    POST /notify/finish   — job reached terminal state
-
-Request body: JSON with job fields.
-    Minimal:  {"job_id": "12345"}
-    Full:     raw `scontrol show job <id> --json` .jobs[0] object
-
-Run (development):
-    python main.py [--host 127.0.0.1] [--port 8080]
-
-Run (production):
-    gunicorn -w 4 -b 127.0.0.1:8080 app:app
-"""
-
 import os
+import time
 import logging
 from dotenv import load_dotenv
 from functools import wraps
@@ -55,7 +33,7 @@ logging.info("Message database initialised (max %d visible in Telegram)", db.MAX
 
 
 def _cleanup_overflow() -> None:
-    """Delete Telegram messages that exceed the MAX_MESSAGES window."""
+    "Delete Telegram messages that exceed the MAX_MESSAGES window."
     for rec in db.get_overflow_records():
         for mid in rec["telegram_msg_ids"]:
             try:
@@ -96,7 +74,7 @@ def _exit_code(field) -> str:
 
 
 def _normalise(raw: dict) -> dict:
-    """Flatten raw scontrol / hook JSON into the dict notify.py expects."""
+    "Flatten raw scontrol / hook JSON into the dict notify.py expects."
     # If the caller sent the full scontrol wrapper, unwrap it.
     if "jobs" in raw and isinstance(raw["jobs"], list) and raw["jobs"]:
         raw = raw["jobs"][0]
@@ -119,7 +97,7 @@ def _normalise(raw: dict) -> dict:
 # ── Auth decorator ────────────────────────────────────────────────────────────
 
 def require_auth(f):
-    """Skip auth check if AUTH_TOKEN is empty; otherwise verify Bearer token."""
+    "Skip auth check if AUTH_TOKEN is empty; otherwise verify Bearer token."
     @wraps(f)
     def decorated(*args, **kwargs):
         if AUTH_TOKEN:
@@ -136,7 +114,7 @@ def require_auth(f):
 @app.route("/notify/start", methods=["POST"])
 @require_auth
 def handle_start():
-    """Handle job start notification."""
+    "Handle job start notification."
     raw = request.get_json(silent=True)
     if not raw:
         return jsonify(error="empty or invalid JSON body"), 400
@@ -166,7 +144,7 @@ def handle_start():
 @app.route("/notify/finish", methods=["POST"])
 @require_auth
 def handle_finish():
-    """Handle job completion notification."""
+    "Handle job completion notification."
     raw = request.get_json(silent=True)
     if not raw:
         return jsonify(error="empty or invalid JSON body"), 400
@@ -182,6 +160,13 @@ def handle_finish():
     # Infer state from exit code when not provided
     if job["job_state"] == "UNKNOWN":
         job["job_state"] = "COMPLETED" if job["exit_code"] == "0" else "FAILED"
+    # Fill in missing timestamps from the database
+    if not job["end_time"]:
+        job["end_time"] = int(time.time())
+    if not job["start_time"]:
+        db_start = db.get_start_time(job["job_id"])
+        if db_start:
+            job["start_time"] = int(db_start)
     try:
         msg_ids = notify.notify_finished(job)
         summary = f"Job {job['job_id']} ({job['name']}) finished — state={job['job_state']} exit={job['exit_code']}"
@@ -196,11 +181,11 @@ def handle_finish():
 @app.route("/messages", methods=["GET"])
 @require_auth
 def recent_messages():
-    """Return the most recent sent notifications (up to MAX_MESSAGES)."""
+    "Return the most recent sent notifications (up to MAX_MESSAGES)."
     return jsonify(messages=db.get_recent_messages()), 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Simple health-check endpoint."""
+    "Simple health-check endpoint."
     return jsonify(status="ok"), 200
