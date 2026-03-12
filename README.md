@@ -5,10 +5,10 @@ Slurm 作业生命周期事件通过 Telegram Bot 推送通知。Slurm 钩子脚
 ## 架构
 
 ```
-┌─────────────────┐ curl POST  ┌───────────────────┐  HTTPS  ┌──────────┐
+┌─────────────────┐ curl POST   ┌───────────────────┐  HTTPS   ┌──────────┐
 │ PrologSlurmctld │──────────▶ │   Flask daemon    │───────▶ │ Telegram │
-│ EpilogSlurmctld │            │   (app.py + db)   │         │ Bot API  │
-└─────────────────┘            └───────────────────┘         └──────────┘
+│ EpilogSlurmctld │             │   (app.py + db)   │          │ Bot API  │
+└─────────────────┘             └───────────────────┘          └──────────┘
 ```
 
 - **on_start.sh** (PrologSlurmctld)：作业开始 → 发送「已启动」通知
