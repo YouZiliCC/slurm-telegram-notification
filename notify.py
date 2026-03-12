@@ -164,7 +164,7 @@ def notify_finished(job: dict) -> list[int]:
         int(job.get("start_time", 0) or 0),
         int(job.get("end_time",   0) or 0),
     )
-    icon = "✅" if str(state).upper() == "COMPLETED" else "❌"
+    icon = "✅" if str(state).upper() == "COMPLETED" or str(exit_code) == "0" else "❌"
 
     html = (
         f"{icon} <b>Slurm Job Finished</b>\n"

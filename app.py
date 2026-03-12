@@ -48,6 +48,7 @@ except ImportError as e:
     logging.error(f"Failed to import notify module: {e}")
     exit(1)
 
+# Database
 import db
 db.init_db()
 logging.info("Message database initialised (max %d visible in Telegram)", db.MAX_MESSAGES)
@@ -148,6 +149,9 @@ def handle_start():
 
     log.info("Job started: id=%s name=%s user=%s",
              job["job_id"], job["name"], job["user_name"])
+    # For start events, state should be RUNNING
+    if job["job_state"] == "UNKNOWN":
+        job["job_state"] = "RUNNING"
     try:
         msg_ids = notify.notify_started(job)
         summary = f"Job {job['job_id']} ({job['name']}) started — user={job['user_name']}"
@@ -175,6 +179,9 @@ def handle_finish():
 
     log.info("Job finished: id=%s name=%s state=%s exit=%s",
              job["job_id"], job["name"], job["job_state"], job["exit_code"])
+    # Infer state from exit code when not provided
+    if job["job_state"] == "UNKNOWN":
+        job["job_state"] = "COMPLETED" if job["exit_code"] == "0" else "FAILED"
     try:
         msg_ids = notify.notify_finished(job)
         summary = f"Job {job['job_id']} ({job['name']}) finished — state={job['job_state']} exit={job['exit_code']}"

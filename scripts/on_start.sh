@@ -14,15 +14,16 @@ fi
 if [ -z "$PAYLOAD" ]; then
     PAYLOAD=$(jq -nc \
         --arg job_id    "${SLURM_JOB_ID}" \
+        --arg name      "${SLURM_JOB_NAME}" \
         --arg user_name "${SLURM_JOB_USER}" \
         --arg partition "${SLURM_JOB_PARTITION}" \
-        '{job_id: $job_id, user_name: $user_name, partition: $partition}' \
+        '{job_id: $job_id, name: $name, user_name: $user_name, partition: $partition}' \
         2>/dev/null)
 fi
 
 # ── Last resort: plain string construction (no jq) ──────────────────────────
 if [ -z "$PAYLOAD" ]; then
-    PAYLOAD="{\"job_id\":\"${SLURM_JOB_ID}\",\"user_name\":\"${SLURM_JOB_USER}\",\"partition\":\"${SLURM_JOB_PARTITION}\"}"
+    PAYLOAD="{\"job_id\":\"${SLURM_JOB_ID}\",\"name\":\"${SLURM_JOB_NAME}\",\"user_name\":\"${SLURM_JOB_USER}\",\"partition\":\"${SLURM_JOB_PARTITION}\"}"
 fi
 
 # ── POST to daemon ───────────────────────────────────────────────────────────
